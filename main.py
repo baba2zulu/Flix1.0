@@ -1,78 +1,73 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fzmovies_api import Search, Navigate, DownloadLinks
-from fzmovies_api.filters import RecentlyReleasedFilter, IMDBTop250Filter
 import uvicorn
 import os
 
-app = FastAPI(title="KrioFlix Bridge API")
+app = FastAPI(title="KrioFlix Multi-Source Engine")
 
-# Update this to allow your Lovable production URL
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # For production, you can replace "*" with your specific Lovable domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 @app.get("/")
-async def health_check():
-    return {"status": "KrioFlix API is online"}
-
-@app.get("/api/trending")
-async def get_trending():
-    try:
-        # IMDB Top 250 logic from fzmovies-api
-        search = Search(query=IMDBTop250Filter())
-        return {"results": search.all_results.movies[:20]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/search")
-async def search_movies(q: str):
-    try:
-        search = Search(query=q)
-        return {"results": search.all_results.movies}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def health():
+    return {"status": "KrioFlix Aggregator is Live"}
 
 @app.get("/api/resolve")
-async def resolve_movie(movie_id: str):
+async def resolve_movie(movie_id: str, title: str = "Movie"):
     """
-    Resolves links using fzmovies navigation logic with a fallback.
+    Attempts to resolve the movie through multiple high-priority sources
+    to avoid the 404 'Not Found' error.
     """
+    sources =
+    
+    # Source 1: FzMovies (Best for small files/low data)
     try:
-        # Search specifically for the ID/Title
         search = Search(query=movie_id)
-        if not search.all_results.movies:
-            raise ValueError("Movie not found on primary source")
-            
-        target_movie = search.all_results.movies
-        
-        # Navigate through the fzmovies mirror pages
-        movie_page = Navigate(target_movie).results
-        
-        # Select quality (Index 0 is typically 480p - best for SL data)
-        file_option = movie_page.files 
-        
-        # Extract metadata and link
-        link_data = DownloadLinks(file_option).results
-        
-        return {
-            "title": target_movie.title,
-            "stream_url": link_data.links,
-            "size": link_data.size,
-            "quality": "480p",
-            "source": "fzmovies.cms"
-        }
-    except Exception:
-        # FALLBACK: If fzmovies scraping fails, return a VidSrc embed link
-        return {
-            "fallback_embed": f"https://vidsrc.to/embed/movie/{movie_id}",
-            "source": "vidsrc.to (Fallback)",
-            "quality": "HD/Auto"
-        }
+        if search.all_results.movies:
+            target = search.all_results.movies
+            movie_page = Navigate(target).results
+            link_data = DownloadLinks(movie_page.files).results
+            sources.append({
+                "name": "FzMovies (Primary)",
+                "url": link_data.links,
+                "type": "direct",
+                "quality": "480p"
+            })
+    except: pass
+
+    # Source 2: 123MovieNow Redirect (User requested alternative)
+    # We construct a search redirect for this site
+    clean_title = title.replace(" ", "-").lower()
+    sources.append({
+        "name": "123MovieNow (Alternative)",
+        "url": f"https://123movienow.cc/search/{clean_title}",
+        "type": "redirect",
+        "quality": "HD/Auto"
+    })
+
+    # Source 3: VidSrc ME (Reliable Fallback)
+    sources.append({
+        "name": "Server Video-Alpha",
+        "url": f"https://vidsrc.me/embed/movie/{movie_id}",
+        "type": "embed",
+        "quality": "720p"
+    })
+
+    # Source 4: VidSrc CC (Backup)
+    sources.append({
+        "name": "Server Video-Beta",
+        "url": f"https://vidsrc.cc/v2/embed/movie/{movie_id}",
+        "type": "embed",
+        "quality": "HD"
+    })
+
+    return {"movie_id": movie_id, "title": title, "resources": sources}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
